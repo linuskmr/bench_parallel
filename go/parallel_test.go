@@ -1,90 +1,108 @@
 package main
 
 import (
-	"math/rand"
 	"sync"
 	"testing"
 	"sync/atomic"
 )
 
-const N_THREADS = 4
+const N_THREADS = 256
 
 func BenchmarkMutex(bench *testing.B) {
-	arr := randomFloatArray(-9999, 9999, bench.N)
-	sumResult := 0.0
-	sumResultMutex := sync.Mutex{}
-	for n := 0; n < N_THREADS; n++ {
-		go AddUsingMutex(arr, &sumResult, &sumResultMutex)
+	for i := 0; i < bench.N; i++ {
+		sum := 0.0
+
+		sumMutex := sync.Mutex{}
+
+		finish := sync.WaitGroup{}
+		finish.Add(N_THREADS)
+
+		for n := 0; n < N_THREADS; n++ {
+			go AddUsingMutex(&sum, &sumMutex, &finish)
+		}
+
+		finish.Wait()
 	}
 }
 
-func BenchmarkBarrierMutex(bench *testing.B) {
-	arr := randomFloatArray(-9999, 9999, bench.N)
-	sumResult := 0.0
-	sumResultMutex := sync.Mutex{}
-	sumResultBarrier := sync.WaitGroup{}
-	sumResultBarrier.Add(N_THREADS)
-	for n := 0; n < N_THREADS; n++ {
-		go AddUsingBarrierAndMutex(arr, &sumResult, &sumResultBarrier, &sumResultMutex)
+func BenchmarkBarrierAndMutex(bench *testing.B) {
+	for i := 0; i < bench.N; i++ {
+		sum := 0.0
+
+		sumMutex := sync.Mutex{}
+
+		sumBarrier := sync.WaitGroup{}
+		sumBarrier.Add(N_THREADS)
+
+		finish := sync.WaitGroup{}
+		finish.Add(N_THREADS)
+
+		for n := 0; n < N_THREADS; n++ {
+			go AddUsingBarrierAndMutex(&sum, &sumBarrier, &sumMutex, &finish)
+		}
+
+		finish.Wait()
 	}
 }
 
 func BenchmarkCaS(bench *testing.B) {
-	arr := randomFloatArray(-9999, 9999, bench.N)
-	sumResult := atomic.Value{}
-	sumResult.Store(0.0)
-	for n := 0; n < N_THREADS; n++ {
-		go AddUsingCaS(arr, &sumResult)
+	for i := 0; i < bench.N; i++ {
+		sum := atomic.Value{}
+		sum.Store(0.0)
+
+		finish := sync.WaitGroup{}
+		finish.Add(N_THREADS)
+
+		for n := 0; n < N_THREADS; n++ {
+			go AddUsingCaS(&sum, &finish)
+		}
+
+		finish.Wait()
 	}
 }
 
-func AddUsingMutex(arr []float64, sumResult *float64, sumResultMutex *sync.Mutex) {
-	sum := 0.0
-	for i := 0; i < len(arr); i++ {
-		sum += arr[i]
-	}
+
+/// AddUsingMutex locks `sumMutex` before adding to `sum`.
+func AddUsingMutex(sum *float64, sumMutex *sync.Mutex, finish *sync.WaitGroup) {
+	partialSum := 42.0
 	
-	sumResultMutex.Lock()
-	defer sumResultMutex.Unlock()
-	*sumResult += sum
+	sumMutex.Lock()
+	defer sumMutex.Unlock()
+	*sum += partialSum
+
+	finish.Done()
 }
 
-func AddUsingBarrierAndMutex(arr []float64, sumResult *float64, sumResultBarrier *sync.WaitGroup, sumResultMutex *sync.Mutex) {
-	sum := 0.0
-	for i := 0; i < len(arr); i++ {
-		sum += arr[i]
-	}
+/// AddUsingBarrierAndMutex waits for all threads to reach `sumBarrier` before locking `sumMutex` and adding to `sum`.
+func AddUsingBarrierAndMutex(sum *float64, sumBarrier *sync.WaitGroup, sumMutex *sync.Mutex, finish *sync.WaitGroup) {
+	partialSum := 42.0
+
 	// Signal that *this* goroutine is done
-	sumResultBarrier.Done()
+	sumBarrier.Done()
 
 	// Wait for all other goroutines to finish
-	sumResultBarrier.Wait()
+	sumBarrier.Wait()
 	
-	sumResultMutex.Lock()
-	defer sumResultMutex.Unlock()
-	*sumResult += sum
+	{
+		sumMutex.Lock()
+		defer sumMutex.Unlock()
+		*sum += partialSum
+	}
+
+	finish.Done()
 }
 
-func AddUsingCaS(arr []float64, sumResult *atomic.Value) {
-	sum := 0.0
-	for i := 0; i < len(arr); i++ {
-		sum += arr[i]
-	}
+/// AddUsingCaS uses a compare-and-swap loop to add to `sum`.
+func AddUsingCaS(sum *atomic.Value, finish *sync.WaitGroup) {
+	partialSum := 42.0
 	
 	for {
-		sumResultOld := sumResult.Load().(float64)
-		sumResultNew := sumResultOld + sum
-		if sumResult.CompareAndSwap(sumResultOld, sumResultNew) {
+		sumOld := sum.Load().(float64)
+		sumNew := sumOld + partialSum
+		if sum.CompareAndSwap(sumOld, sumNew) {
 			break
 		}
 	}
-}
 
-
-func randomFloatArray(min, max float64, n int) []float64 {
-    res := make([]float64, n)
-    for i := range res {
-        res[i] = min + rand.Float64() * (max - min)
-    }
-    return res
+	finish.Done()
 }
